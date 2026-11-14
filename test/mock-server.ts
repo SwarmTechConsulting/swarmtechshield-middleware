@@ -13,7 +13,7 @@ export interface MockState {
   rules: unknown[];
   blocklist: unknown[];
   down: boolean;
-  syncCalls: { client_version: unknown; ip_source?: unknown }[];
+  syncCalls: { client_version: unknown; ip_source?: unknown; threat_list_versions?: Record<string, string> }[];
   logBatches: unknown[][];
   logStatus: number | null;
   /** Force syncRuleCache to answer with this status (and Retry-After, if set). */
@@ -21,6 +21,8 @@ export interface MockState {
   syncRetryAfter: string | null;
   serviceIdentities: unknown[];
   failClosedPaths?: string[];
+  /** Threat lists the mock serves, sent when the client's version differs. */
+  threatLists?: Record<string, { version: string; cidrs: string[] }>;
   /** Verify x-shield-signature on log uploads the way SwarmTech Shield does. */
   requireSignature: boolean;
   /** Result of the signature check for each log upload. */
@@ -73,7 +75,7 @@ export async function startMock(init: Partial<MockState> = {}): Promise<Mock> {
       const authorised = body.connection_key === state.key && state.appStatus === "active";
 
       if (req.url === "/functions/syncRuleCache") {
-        state.syncCalls.push({ client_version: body.client_version, ip_source: body.ip_source });
+        state.syncCalls.push({ client_version: body.client_version, ip_source: body.ip_source, threat_list_versions: body.threat_list_versions });
         if (state.syncStatus) {
           return send(state.syncStatus, { error: "forced" }, state.syncRetryAfter ? { "retry-after": state.syncRetryAfter } : {});
         }
@@ -91,6 +93,9 @@ export async function startMock(init: Partial<MockState> = {}): Promise<Mock> {
           blocklist: state.blocklist,
           service_identities: state.serviceIdentities,
           ...(state.failClosedPaths ? { fail_closed_paths: state.failClosedPaths } : {}),
+          ...(state.threatLists
+            ? { threat_lists: Object.fromEntries(Object.entries(state.threatLists).filter(([k, v]) => body.threat_list_versions?.[k] !== v.version)) }
+            : {}),
           generated_at: new Date().toISOString(),
         });
       }

@@ -35,6 +35,8 @@ export interface RuleCriteria {
   port?: number | string;
   max_requests?: number | string;
   window_seconds?: number | string;
+  /** reputation rules: platform threat lists (spamhaus_drop, tor, datacenter). */
+  lists?: string[];
   [key: string]: unknown;
 }
 
@@ -72,6 +74,8 @@ export interface RequestContext {
   user_agent?: string;
   body_size?: number | string;
   headers?: Record<string, string>;
+  /** Threat lists the source IP is on, worked out by the caller (reputation rules). */
+  threat_lists?: string[];
 }
 
 /** Counts requests from the current IP in the last `windowSeconds`, INCLUDING the current one. */
@@ -413,6 +417,14 @@ export function matchRule(rule: Rule, ctx: RequestContext, rateCount?: RateCount
       if (c.port === null || c.port === undefined || c.port === "") return false;
       const ports = String(c.port).split(",").map((p) => parseInt(p.trim(), 10)).filter((n) => !isNaN(n));
       return ports.includes(Number(ctx.port));
+    }
+    case "reputation": {
+      // Source reputation: the IP is on one of the listed platform threat lists,
+      // optionally narrowed by method and path. Same as SwarmTech Shield's engine.
+      const lists = Array.isArray(c.lists) ? c.lists.map(String) : [];
+      const onLists = Array.isArray(ctx.threat_lists) ? ctx.threat_lists : [];
+      if (!lists.length || !lists.some((l) => onLists.includes(l))) return false;
+      return methodMatches(c.method, ctx.method) && pathMatches(c.path, ctx.path);
     }
     case "rate_limit": {
       const max = toNum(c.max_requests);

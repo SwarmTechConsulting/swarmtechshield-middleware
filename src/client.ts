@@ -38,6 +38,7 @@ import {
 import { Resilience, type ResilienceOptions, type ResilienceState } from "./resilience.ts";
 import type { IpSource } from "./ip.ts";
 import { normaliseFailClosedPaths, pathFailsClosed } from "./failMode.ts";
+import { ThreatLists, type ThreatListPayload } from "./threatLists.ts";
 
 export const SDK_VERSION = "0.9.0";
 
@@ -199,6 +200,8 @@ interface SyncResponse {
   service_identities?: ServiceIdentity[];
   /** Paths that fail closed even when fail_mode is open. */
   fail_closed_paths?: string[];
+  /** Threat lists for reputation rules, sent only when this client's version is out of date. */
+  threat_lists?: Record<string, ThreatListPayload>;
   error?: string;
 }
 
@@ -257,6 +260,7 @@ export class ShieldClient {
   private outcomes: OutcomeTracker | null;
   private patches = new VirtualPatches();
   private services = new ServiceIdentities();
+  private threatLists = new ThreatLists();
   private ipSource: IpSource | null = null;
   private probes: ProbeVerifier | null;
   private reportDeps: boolean;
@@ -388,7 +392,7 @@ export class ShieldClient {
         // cheap 503 before any inspection work. Allow rules (e.g. your health checks) still pass.
         if (this.resilience?.shouldShed(path, info.user)) {
           const pre = evaluate(
-            { source_ip: ip, method, path, country: info.country || "", user_agent: info.userAgent || "" },
+            { source_ip: ip, method, path, country: info.country || "", user_agent: info.userAgent || "", threat_lists: this.threatLists.listsFor(ip) },
             { rules: this.rules, blocklist, now, burst: false, autoDetection: false },
           );
           if (!(pre.verdict === "allowed" && pre.triggered?.action === "allow")) {
@@ -436,6 +440,8 @@ export class ShieldClient {
             country: info.country || "",
             user_agent: info.userAgent || "",
             body_size: info.bodySize ?? 0,
+            // Reputation rules: which platform threat lists this IP is on.
+            threat_lists: this.threatLists.listsFor(ip),
           },
           {
             rules: this.rules,
@@ -705,6 +711,7 @@ export class ShieldClient {
       resilience: this.resilience?.state() ?? null,
       ipSource: this.ipSource,
       loginDefence: this.outcomes?.defenceState() ?? null,
+      threatLists: this.threatLists.status(),
     };
   }
 
@@ -745,6 +752,8 @@ export class ShieldClient {
         sdk_version: SDK_VERSION,
         ...(full && this.reportDeps && Object.keys(deps).length ? { dependencies: deps } : {}),
         ...(full && this.ipSource ? { ip_source: this.ipSource } : {}),
+        // The threat-list versions held, so the server only sends lists that changed.
+        ...(full ? { threat_list_versions: this.threatLists.versions() } : {}),
       });
       if (res.status === 401 || res.status === 403) {
         this.disabled = true;
@@ -771,6 +780,9 @@ export class ShieldClient {
         this.rules = body.rules;
         this.blocklist = body.blocklist;
         this.services.load(Array.isArray(body.service_identities) ? body.service_identities : []);
+        // Threat lists for reputation rules: apply new versions, drop lists no rule uses.
+        if (body.threat_lists) this.threatLists.apply(body.threat_lists);
+        this.threatLists.retain(listsUsedByRules(this.rules));
         if (Array.isArray(body.virtual_patches)) {
           const errors = this.patches.load(body.virtual_patches);
           if (errors.length) this.report(new Error(`Some virtual patches were skipped: ${errors.slice(0, 5).join("; ")}`), "sync");
@@ -1033,3 +1045,14 @@ export function createClient(options: ShieldOptions): ShieldClient {
   return new ShieldClient(options);
 }
 
+
+/** The threat lists the app's reputation rules use. */
+function listsUsedByRules(rules: Rule[]): string[] {
+  const keys = new Set<string>();
+  for (const r of rules) {
+    if (r.type !== "reputation") continue;
+    const lists = r.criteria?.lists;
+    if (Array.isArray(lists)) for (const k of lists) keys.add(String(k));
+  }
+  return [...keys];
+}
