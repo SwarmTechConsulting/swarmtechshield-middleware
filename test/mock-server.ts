@@ -20,6 +20,7 @@ export interface MockState {
   syncStatus: number | null;
   syncRetryAfter: string | null;
   serviceIdentities: unknown[];
+  failClosedPaths?: string[];
   /** Verify x-shield-signature on log uploads the way SwarmTech Shield does. */
   requireSignature: boolean;
   /** Result of the signature check for each log upload. */
@@ -89,6 +90,7 @@ export async function startMock(init: Partial<MockState> = {}): Promise<Mock> {
           rules: state.rules,
           blocklist: state.blocklist,
           service_identities: state.serviceIdentities,
+          ...(state.failClosedPaths ? { fail_closed_paths: state.failClosedPaths } : {}),
           generated_at: new Date().toISOString(),
         });
       }
