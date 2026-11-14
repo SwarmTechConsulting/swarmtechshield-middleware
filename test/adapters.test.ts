@@ -89,6 +89,9 @@ test("Next.js: returns a 403 Response when blocked and undefined to continue", a
   const mock = await startMock({ rules });
   t.after(() => mock.close());
   mock.state.key = freshKey();
+  // On Vercel, x-real-ip is set by the platform and can be trusted.
+  process.env.VERCEL = "1";
+  t.after(() => delete process.env.VERCEL);
   const mw = SwarmTechShield.nextjs({ connectionKey: mock.state.key, syncUrl: mock.syncUrl, logUrl: mock.logUrl, logBatchSize: 1 });
   const waited: Promise<unknown>[] = [];
   const event = { waitUntil: (p: Promise<unknown>) => void waited.push(p) };

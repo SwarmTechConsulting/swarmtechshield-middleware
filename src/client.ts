@@ -35,6 +35,7 @@ import {
   type VirtualPatch,
 } from "./defence.ts";
 import { Resilience, type ResilienceOptions, type ResilienceState } from "./resilience.ts";
+import type { IpSource } from "./ip.ts";
 
 export const SDK_VERSION = "0.6.0";
 
@@ -242,6 +243,7 @@ export class ShieldClient {
   private outcomes: OutcomeTracker | null;
   private patches = new VirtualPatches();
   private services = new ServiceIdentities();
+  private ipSource: IpSource | null = null;
   private probes: ProbeVerifier | null;
   private reportDeps: boolean;
   private resilience: Resilience | null;
@@ -640,6 +642,18 @@ export class ShieldClient {
     }
   }
 
+  /**
+   * Record how the adapter found the client IP. Reported to SwarmTech Shield with full
+   * syncs, so the console can warn when an app's IPs could be spoofed. Cheap to call per request.
+   */
+  noteIpSource(source: IpSource): void {
+    const prev = this.ipSource;
+    if (prev && prev.method === source.method && prev.trust === source.trust && prev.warning === source.warning) return;
+    this.ipSource = { method: String(source.method).slice(0, 80), trust: source.trust, ...(source.warning ? { warning: source.warning.slice(0, 400) } : {}) };
+    // Report a change promptly rather than waiting for the next scheduled full sync.
+    if (prev) this.lastFullSync = 0;
+  }
+
   /** Snapshot of the client's state, for health endpoints and debugging. */
   status() {
     return {
@@ -657,6 +671,7 @@ export class ShieldClient {
       decoys: !!this.decoys,
       virtualPatches: this.patches.active(),
       resilience: this.resilience?.state() ?? null,
+      ipSource: this.ipSource,
     };
   }
 
@@ -696,6 +711,7 @@ export class ShieldClient {
         client_version: full ? null : this.version,
         sdk_version: SDK_VERSION,
         ...(full && this.reportDeps && Object.keys(deps).length ? { dependencies: deps } : {}),
+        ...(full && this.ipSource ? { ip_source: this.ipSource } : {}),
       });
       if (res.status === 401 || res.status === 403) {
         this.disabled = true;

@@ -2,7 +2,7 @@
 // Next.js middleware, Cloudflare Workers, Base44 (Deno) functions.
 
 import { getClient, type CheckResult } from "../client.ts";
-import { cleanIp, clientIpFromHeaders } from "../ip.ts";
+import { cleanIp, clientIpFromHeaders, fromForwardedFor, onVercel, NO_TRUSTED_SOURCE, type IpSource } from "../ip.ts";
 import { bodySizeFrom, inspectableContentType, pathFromUrl, toResponse, type AdapterOptions } from "./shared.ts";
 
 /** Read a request body (from a clone, so the original is untouched) up to a byte cap. */
@@ -51,11 +51,49 @@ const ALLOWED_SKIPPED: CheckResult = {
 };
 
 let reportedConfigError = false;
+let reportedIpWarning = false;
+
+/**
+ * How each adapter may find the client IP when you haven't configured it:
+ *  - platform:       read `ipHeaders`, which the named platform sets and overwrites.
+ *  - assume-xff:     X-Forwarded-For counted from the right (one proxy), reported as "assumed".
+ *  - require-config: no default is safe (a client could set any header), so the IP stays
+ *                    empty until you set trustedHeader, trustedProxyCount or getClientIp.
+ */
+type IpPolicy = { kind: "platform"; platform: string } | { kind: "assume-xff"; platform: string } | { kind: "require-config" };
+
+interface ScreenDefaults {
+  ipHeaders: string[];
+  ipPolicy: IpPolicy;
+  countryHeader?: string;
+  country?: string;
+}
+
+/** The client IP and how far it can be trusted. Exported for tests. */
+export function resolveFetchIp(req: Request, options: FetchAdapterOptions, defaults: ScreenDefaults): { ip: string; source: IpSource } {
+  const get = (h: string) => req.headers.get(h);
+  if (options.getClientIp) return { ip: cleanIp(options.getClientIp(req)), source: { method: "getClientIp", trust: "configured" } };
+  if (options.trustedHeader) {
+    return { ip: clientIpFromHeaders(get, options, []), source: { method: `header:${options.trustedHeader.toLowerCase()}`, trust: "configured" } };
+  }
+  if (options.trustedProxyCount !== undefined) {
+    const n = Math.max(1, Math.floor(options.trustedProxyCount));
+    return { ip: fromForwardedFor(get("x-forwarded-for"), n), source: { method: `x-forwarded-for:${n}`, trust: "configured" } };
+  }
+  const policy = defaults.ipPolicy;
+  if (policy.kind === "platform") {
+    return { ip: clientIpFromHeaders(get, {}, defaults.ipHeaders), source: { method: `${policy.platform}:${defaults.ipHeaders[0]}`, trust: "platform" } };
+  }
+  if (policy.kind === "assume-xff") {
+    return { ip: fromForwardedFor(get("x-forwarded-for"), 1), source: { method: `${policy.platform}:x-forwarded-for:1`, trust: "assumed" } };
+  }
+  return { ip: "", source: { method: "none", trust: "none", warning: NO_TRUSTED_SOURCE } };
+}
 
 async function screen(
   req: Request,
   options: FetchAdapterOptions,
-  defaults: { ipHeaders: string[]; countryHeader?: string; country?: string },
+  defaults: ScreenDefaults,
 ): Promise<CheckResult> {
   if (options.skip?.(req)) return ALLOWED_SKIPPED;
   let client;
@@ -74,9 +112,15 @@ async function screen(
   const get = (h: string) => req.headers.get(h);
   let ip = "";
   try {
-    ip = options.getClientIp
-      ? cleanIp(options.getClientIp(req))
-      : clientIpFromHeaders(get, options, options.trustedHeader ? [] : defaults.ipHeaders);
+    const resolved = resolveFetchIp(req, options, defaults);
+    ip = resolved.ip;
+    client.noteIpSource(resolved.source);
+    if (resolved.source.warning && !reportedIpWarning) {
+      reportedIpWarning = true;
+      const e = new Error(resolved.source.warning);
+      if (options.onError) options.onError(e, "config");
+      else console.warn(`[swarmtechshield] ${e.message}`);
+    }
   } catch {
     ip = "";
   }
@@ -114,12 +158,18 @@ async function screen(
  * Next.js middleware (middleware.ts):
  *   export const middleware = SwarmTechShield.nextjs({ connectionKey: process.env.SWARMTECH_SHIELD_KEY!, syncUrl, logUrl });
  *
- * Client IP defaults to x-real-ip (set by Vercel), then X-Forwarded-For counted from the right.
- * Self-hosting behind your own proxy? Make sure it overwrites x-real-ip, or set trustedHeader.
+ * On Vercel the client IP comes from x-real-ip and the country from x-vercel-ip-country,
+ * which Vercel sets and overwrites. Anywhere else those headers could come from the
+ * client, so they are not read: set trustedHeader (the header your proxy overwrites),
+ * trustedProxyCount or getClientIp. Until you do, the IP is left empty and IP rules can't apply.
  */
 export function nextjs(options: FetchAdapterOptions) {
+  const vercel = onVercel();
+  const defaults: ScreenDefaults = vercel
+    ? { ipHeaders: ["x-real-ip"], ipPolicy: { kind: "platform", platform: "vercel" }, countryHeader: "x-vercel-ip-country" }
+    : { ipHeaders: [], ipPolicy: { kind: "require-config" } };
   return async function swarmTechShieldMiddleware(request: Request, event?: WaitUntilContext): Promise<Response | undefined> {
-    const result = await screen(request, options, { ipHeaders: ["x-real-ip"], countryHeader: "x-vercel-ip-country" });
+    const result = await screen(request, options, defaults);
     if (result.background) event?.waitUntil(result.background);
     return toResponse(result, options) ?? undefined;
   };
@@ -142,6 +192,7 @@ export async function cloudflare(
   const cf = (request as unknown as { cf?: { country?: string } }).cf;
   const result = await screen(request, options, {
     ipHeaders: ["cf-connecting-ip"],
+    ipPolicy: { kind: "platform", platform: "cloudflare" },
     countryHeader: "cf-ipcountry",
     country: cf?.country,
   });
@@ -158,13 +209,15 @@ export async function cloudflare(
  *
  * There is no waitUntil here, so when a log flush is due this waits for it (at most
  * `backgroundWaitMs`, default 500 ms). Most requests do not wait at all.
- * Client IP defaults to X-Forwarded-For counted from the right (trustedProxyCount, default 1).
+ * Client IP defaults to X-Forwarded-For counted from the right (one proxy), which is how
+ * Base44's hosting forwards requests. This package can't verify that, so it is reported
+ * to the console as "assumed"; set trustedProxyCount or trustedHeader to make it explicit.
  */
 export async function base44(
   request: Request,
   options: FetchAdapterOptions & { backgroundWaitMs?: number },
 ): Promise<CheckResult> {
-  const result = await screen(request, options, { ipHeaders: [] });
+  const result = await screen(request, options, { ipHeaders: [], ipPolicy: { kind: "assume-xff", platform: "base44" } });
   if (result.background) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
@@ -178,7 +231,12 @@ export async function base44(
   return result;
 }
 
-/** Generic: screen any standard Request (Deno.serve, Bun.serve, Hono, etc.). */
+/**
+ * Generic: screen any standard Request (Deno.serve, Bun.serve, Hono, etc.).
+ * A bare Request carries no trustworthy client IP, so pass getClientIp (for example
+ * Deno.serve's info.remoteAddr.hostname), trustedHeader or trustedProxyCount. Without
+ * one, the IP is left empty and IP rules can't apply.
+ */
 export async function screenRequest(request: Request, options: FetchAdapterOptions): Promise<CheckResult> {
-  return screen(request, options, { ipHeaders: [] });
+  return screen(request, options, { ipHeaders: [], ipPolicy: { kind: "require-config" } });
 }
