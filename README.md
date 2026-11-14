@@ -252,6 +252,12 @@ app.post("/login", async (req, res) => {
 
 Blocking IPs is pointless against a pool that uses each one once, so the defence never blocks addresses. Each episode is reported to SwarmTech Shield once (as an incident with counts only: failures, IPs, accounts, failure rate; usernames never leave your app), where it raises an alert and can run automations. Tune it with `outcomes: { login: { distributed: { minFailures, minIps, minUsers, minFailureRatio, windowSeconds, cooldownSeconds, response } } }`, or switch it off with `distributed: false`. `client.status().loginDefence` shows whether it's on.
 
+### Source reputation (threat lists)
+
+SwarmTech Shield keeps platform threat lists, refreshed every 6 hours: **Spamhaus DROP** (networks run by criminals), **Tor exit relays**, and **cloud and hosting providers** (AWS, Google Cloud, Oracle, DigitalOcean). A *Source Reputation* rule in the console matches requests from addresses on one or more lists, optionally only for a method or path, for example "block Tor on `/admin`" or "throttle cloud traffic on `POST /login`".
+
+The middleware receives only the lists your rules use, with the rule sync, and only when its copy is out of date; it checks each request in memory. `client.status().threatLists` shows what it holds. Rules of this type need 0.10.0 or later; older versions ignore them (an unknown rule type matches nothing).
+
 ### Virtual patches matched to your dependencies
 
 ```js
