@@ -1,6 +1,6 @@
 {
   "name": "@swarmtechshield/middleware",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Drop-in SwarmTech Shield request screening for Express, Next.js, Cloudflare Workers and Base44/Deno. Rules are evaluated locally from a synced cache; logs are sent in the background.",
   "license": "MIT",
   "repository": {
