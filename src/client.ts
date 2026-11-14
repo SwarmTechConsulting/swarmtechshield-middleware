@@ -36,7 +36,7 @@ import {
 } from "./defence.ts";
 import { Resilience, type ResilienceOptions, type ResilienceState } from "./resilience.ts";
 
-export const SDK_VERSION = "0.5.0";
+export const SDK_VERSION = "0.6.0";
 
 export type FailMode = "open" | "closed";
 
