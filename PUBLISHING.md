@@ -45,18 +45,22 @@ On npmjs.com, open the package (profile picture → **Packages** → **@swarmtec
    | Workflow filename | `publish.yml` |
    | Environment name | `npm` |
 
+   Under **Allowed actions**, tick **npm publish**. Since September 2026 npm creates new trusted publishers as "stage publish only", and this workflow publishes directly; without the tick npm answers `403 … OIDC permission denied for this action`. (Each run already waits for your approval on GitHub, so that is the human check.)
+
    Save it. The GitHub environment `npm` and its approval rule already exist.
 2. Under **Publishing access**, select **Require two-factor authentication and disallow tokens** and click **Update Package Settings**.
 
-npm notes that a new trusted-publisher setting must complete a publish within 2 days. If it shows as expired, add it again before your next GitHub release.
+npm notes that a new trusted-publisher setting must complete a publish within 2 days. If it shows as expired, add it again (and tick **npm publish** again) before your next GitHub release.
 
 ### Every release
 
 1. Make your changes and run `npm test`. Add a line under `## Unreleased` in `CHANGELOG.md`.
 2. Commit them: `git add .` then `git commit -m "describe the change"`.
-3. Bump the version: `npm version patch` (or `minor`), as in Part A step 2.
+3. Bump the version: `npm version patch` (or `minor`), as in Part A step 2. **Don't skip this:** the release's tag must match the version in `package.json`, or the workflow stops at "Tag v… does not match package.json".
 4. Push the commit and the tag: `git push --follow-tags`.
 5. On GitHub: **Releases** → **Draft a new release** → **Choose a tag** → pick the tag you just pushed → **Publish release**.
+
+   Without git on your computer: open a pull request that changes `"version"` in `package.json` and runs `node scripts/sync-version.mjs` (or ask for one), merge it, then create the release with a new tag `vX.Y.Z` targeting `main`.
 6. Open **Actions**, click the **Publish** run, then **Review deployments** → tick **npm** → **Approve and deploy**.
 7. Update `MIDDLEWARE_VERSION` in swarmtech-shield, as in Part A step 6.
 
@@ -77,9 +81,10 @@ In the run's log, the **Show versions** step should print npm 11.5 or newer, and
 | Message | What it means | Fix |
 |---|---|---|
 | `E404 … @swarmtechshield%2fmiddleware` on your computer | You're not a member of the `swarmtechshield` npm organisation, or not logged in as the right user | `npm whoami`, then check the organisation's members on npmjs.com |
-| `E404` in the GitHub workflow | npm didn't accept GitHub's login: the trusted publisher fields don't match | Recheck the one-time setup for typos (`swarmtechshield-middleware`, `publish.yml`, environment `npm`) |
+| `ENEEDAUTH` or `E404` in the GitHub workflow | npm didn't accept GitHub's login: the trusted publisher fields don't match (for example after a repository rename), or there is no trusted publisher | Recheck the one-time setup for typos (`swarmtechshield-middleware`, `publish.yml`, environment `npm`), then **Re-run failed jobs** |
+| `E403 … OIDC permission denied for this action` in the workflow | Login worked, but the trusted publisher only allows staged publishing | Edit the trusted publisher, tick **npm publish** under **Allowed actions**, then **Re-run failed jobs** |
 | `E403 … cannot publish over the previously published version` | That version already exists | Bump the version (`npm version patch`) |
 | `Version mismatch` | `package.json` and `SDK_VERSION` differ | Make them the same |
 | `ENEEDAUTH` | Not logged in | `npm login` |
-| Workflow: `Tag v… does not match package.json` | The release tag differs from the version | Delete the release, retag with the right version |
+| Workflow: `Tag v… does not match package.json` | The version wasn't bumped before the release was created | Bump and merge the version, delete the release **and** its tag, then create the release again from `main` |
 | Workflow: provenance or "repository" error | `repository` in package.json doesn't match the GitHub repository | Check it says `SwarmTechConsulting/swarmtechshield-middleware` and that the repository has that name |
