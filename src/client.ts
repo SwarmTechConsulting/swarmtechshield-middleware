@@ -32,6 +32,7 @@ import {
   type OutcomeReport,
   type ProbeResult,
   type ServiceIdentity,
+  type StuffingStats,
   type VirtualPatch,
 } from "./defence.ts";
 import { Resilience, type ResilienceOptions, type ResilienceState } from "./resilience.ts";
@@ -150,6 +151,13 @@ export interface CheckResult {
   patch?: ActivePatch;
   /** Set when the request carried a valid service-identity token (see SERVICE_HEADER). */
   identity?: { id: string; name: string; kind: "service" | "synthetic" };
+  /**
+   * Set on login paths while credential stuffing is in progress (outcomes.login.distributed,
+   * response "challenge"): the request is allowed, but ask for a CAPTCHA or a second factor.
+   */
+  challenge?: { reason: string };
+  /** Set on the one request that reported the start of a credential-stuffing episode. */
+  stuffingEpisode?: StuffingStats;
   /** Set when the request was shed because the server is overloaded (send a 503). */
   shed?: boolean;
   /** Seconds to put in Retry-After for a shed request. */
@@ -484,6 +492,17 @@ export class ShieldClient {
           } else if (outcome) {
             const verdict = outcome.action === "block" ? "blocked" : "throttled";
             result = this.override(decision, verdict, `${outcome.type === "payment" ? "Payment" : outcome.type === "login" ? "Login" : "Sign-up"} protection: ${outcome.reason}`, { id: `outcome:${outcome.type}`, name: `${outcome.type} protection`, type: "rate_limit", action: outcome.action }, "Outcome protection");
+          } else {
+            // App-wide credential-stuffing defence (many IPs, many accounts, mostly failing).
+            const defence = synthetic ? null : this.outcomes?.loginDefence(path, ip) ?? null;
+            if (defence) {
+              if (defence.throttle) {
+                result = this.override(decision, "throttled", `Login protection: ${defence.reason}; this IP hasn't signed in recently`, { id: "outcome:login", name: "login protection (distributed)", type: "rate_limit", action: "throttle" }, "Outcome protection");
+              } else if (defence.response === "challenge") {
+                result.challenge = { reason: defence.reason };
+              }
+              if (defence.episode) result.stuffingEpisode = defence.episode;
+            }
           }
         }
       }
@@ -685,6 +704,7 @@ export class ShieldClient {
       virtualPatches: this.patches.active(),
       resilience: this.resilience?.state() ?? null,
       ipSource: this.ipSource,
+      loginDefence: this.outcomes?.defenceState() ?? null,
     };
   }
 
@@ -828,7 +848,8 @@ export class ShieldClient {
 
   private enqueue(info: RequestInfo, result: Omit<CheckResult, "durationMs" | "background">, durationMs: number, now: number) {
     if (!this.opts.logUrl) return;
-    if (result.verdict === "allowed") {
+    // The start of a credential-stuffing episode is always reported, even when allowed traffic isn't logged.
+    if (result.verdict === "allowed" && !result.stuffingEpisode) {
       const la = this.opts.logAllowed;
       if (la === false) return;
       if (typeof la === "number" && Math.random() >= la) return;
@@ -839,7 +860,9 @@ export class ShieldClient {
     const fromBlocklist = d?.triggered?.name === "Blocklist";
     // Service and synthetic traffic never raises an incident.
     let incident = result.verdict === "blocked" && result.source === "rules" && !fromBlocklist && !result.identity;
-    if (incident) {
+    // The start of a credential-stuffing episode is an incident in its own right.
+    if (result.stuffingEpisode) incident = true;
+    if (incident && !result.stuffingEpisode) {
       // At most one incident per IP + rule every 30 minutes from this server.
       const key = `${info.ip}|${d?.triggered?.name || ""}`;
       const seen = this.incidentSeen.get(key);
@@ -867,6 +890,9 @@ export class ShieldClient {
         sdk_version: SDK_VERSION,
         verdict_source: result.source,
         ...(result.identity ? { service_identity: result.identity.name, service_identity_id: result.identity.id } : {}),
+        // Counts only: usernames never leave the app.
+        ...(result.stuffingEpisode ? { stuffing_episode: result.stuffingEpisode } : {}),
+        ...(result.challenge ? { login_challenge: true } : {}),
         auto_block_type: d?.autoBlock?.type ?? null,
         observe_matches: d?.observed.map((o) => o.name) ?? [],
         inspection: d?.inspectionFindings?.length

@@ -231,6 +231,27 @@ app.post("/login", async (req, res) => {
 
 Override any of these with `outcomes: { login: { paths, maxFailuresPerUser, … } }`.
 
+#### Credential stuffing spread across many IPs
+
+Attackers using a proxy pool try each IP, and each account, only once or twice, so none of the limits above ever fires. Across the whole app it still stands out, so login protection also watches all login outcomes together. When, within 10 minutes, there are at least **30 failed logins from at least 10 IPs for at least 10 accounts, and at least 70% of attempts fail**, login defence switches on for login paths until 10 minutes after that stops being true.
+
+What it does is set by `response`:
+
+| `response` | During an episode |
+|---|---|
+| `"challenge"` (default) | Login requests are allowed with `result.challenge` set, so your handler can require a CAPTCHA or second factor. Nothing is blocked. |
+| `"throttle-unknown"` | Login attempts from IPs that haven't signed in successfully in the last 7 days are throttled; returning users' IPs get through. |
+| `"observe"` | Only reported. |
+
+```js
+app.post("/login", async (req, res) => {
+  if (req.swarmtechshield?.challenge && !(await captchaPassed(req))) return res.status(401).json({ captcha: true });
+  // ... sign in, then reportOutcome as above
+});
+```
+
+Blocking IPs is pointless against a pool that uses each one once, so the defence never blocks addresses. Each episode is reported to SwarmTech Shield once (as an incident with counts only: failures, IPs, accounts, failure rate; usernames never leave your app), where it raises an alert and can run automations. Tune it with `outcomes: { login: { distributed: { minFailures, minIps, minUsers, minFailureRatio, windowSeconds, cooldownSeconds, response } } }`, or switch it off with `distributed: false`. `client.status().loginDefence` shows whether it's on.
+
 ### Virtual patches matched to your dependencies
 
 ```js
