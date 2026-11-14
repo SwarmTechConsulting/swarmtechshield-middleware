@@ -331,6 +331,66 @@ export interface OutcomeRule {
   /** Sign-ups: successful sign-ups from one IP. */
   maxSuccessesPerIp?: number;
   action?: "throttle" | "block";
+  /** Login only: app-wide detection of credential stuffing spread across many IPs.
+   *  Override any of the DEFAULT_DISTRIBUTED settings, or false to switch it off. */
+  distributed?: Partial<DistributedRule> | false;
+}
+
+/**
+ * Credential stuffing from a proxy pool tries each IP and each account only once
+ * or twice, so per-IP and per-account limits never fire. Across the whole app it
+ * still stands out: many failed logins, almost all failing, from many IPs, for
+ * many accounts. When all of that holds within `windowSeconds`, login defence
+ * switches on, and stays on until `cooldownSeconds` after it stops holding.
+ */
+export interface DistributedRule {
+  windowSeconds: number;
+  /** Failed logins in the window. */
+  minFailures: number;
+  /** Distinct IPs among those failures. */
+  minIps: number;
+  /** Distinct accounts among those failures (a brute force on one account is a different attack). */
+  minUsers: number;
+  /** Share of login attempts that failed, 0–1. */
+  minFailureRatio: number;
+  cooldownSeconds: number;
+  /**
+   * What login defence does on login paths:
+   *  - "challenge" (default): requests are allowed, with result.challenge set, so your
+   *    login handler can ask for a CAPTCHA or a second factor.
+   *  - "throttle-unknown": throttles attempts from IPs with no successful login in the
+   *    last 7 days; returning users' IPs are let through.
+   *  - "observe": only reports the episode.
+   */
+  response: "challenge" | "throttle-unknown" | "observe";
+}
+
+export const DEFAULT_DISTRIBUTED: DistributedRule = {
+  windowSeconds: 600,
+  minFailures: 30,
+  minIps: 10,
+  minUsers: 10,
+  minFailureRatio: 0.7,
+  cooldownSeconds: 600,
+  response: "challenge",
+};
+
+export interface StuffingStats {
+  failures: number;
+  attempts: number;
+  ips: number;
+  users: number;
+  failureRatio: number;
+  since: string;
+}
+
+export interface LoginDefence {
+  response: DistributedRule["response"];
+  /** Set when this request should be throttled (throttle-unknown, unknown IP). */
+  throttle: boolean;
+  reason: string;
+  /** Set once, on the first request after an episode starts: report it. */
+  episode?: StuffingStats;
 }
 
 export type OutcomeConfig = Partial<Record<OutcomeType, Partial<OutcomeRule> | false>>;
@@ -343,6 +403,7 @@ export const DEFAULT_OUTCOME_RULES: Record<OutcomeType, OutcomeRule> = {
     maxFailuresPerUser: 8,
     maxUsersPerIp: 10,
     action: "throttle",
+    distributed: DEFAULT_DISTRIBUTED,
   },
   payment: {
     paths: ["/checkout*", "/pay*", "/payment*", "/api/payment*", "/api/checkout*", "/orders*"],
@@ -369,6 +430,8 @@ interface Event {
 }
 
 const MAX_KEYS = 50_000;
+const MAX_LOGIN_EVENTS = 20_000;
+const KNOWN_GOOD_MS = 7 * 86_400_000;
 const MAX_EVENTS_PER_KEY = 500;
 
 export interface OutcomeVerdict {
@@ -381,6 +444,15 @@ export class OutcomeTracker {
   readonly rules: Partial<Record<OutcomeType, OutcomeRule>> = {};
   private byIp = new Map<string, Event[]>();
   private byUser = new Map<string, Event[]>();
+  // App-wide login stream and IPs that recently logged in successfully.
+  private logins: { t: number; ok: boolean; ip?: string; user?: string }[] = [];
+  private knownGood = new Map<string, number>();
+  private defenceUntil = 0;
+  private episodeStart = 0;
+  private episodeReported = true;
+  private lastEval = 0;
+  private lastStats: StuffingStats | null = null;
+  private dist: DistributedRule | null = null;
 
   private clock: () => number;
 
@@ -389,7 +461,11 @@ export class OutcomeTracker {
     for (const type of Object.keys(DEFAULT_OUTCOME_RULES) as OutcomeType[]) {
       const c = config?.[type];
       if (c === false) continue;
-      this.rules[type] = { ...DEFAULT_OUTCOME_RULES[type], ...(c || {}) } as OutcomeRule;
+      const rule = { ...DEFAULT_OUTCOME_RULES[type], ...(c || {}) } as OutcomeRule;
+      if (type === "login" && rule.distributed !== false) {
+        this.dist = { ...DEFAULT_DISTRIBUTED, ...(rule.distributed || {}) };
+      }
+      this.rules[type] = rule;
     }
   }
 
@@ -420,6 +496,87 @@ export class OutcomeTracker {
       const list = this.byUser.get(`login|${ev.user}`);
       if (list) for (const e of list) if (!e.ok) e.ok = true;
     }
+    if (r.type === "login") {
+      this.logins.push({ t: ev.t, ok: ev.ok, ip: r.ip, user: ev.user });
+      if (this.logins.length > MAX_LOGIN_EVENTS) this.logins.splice(0, this.logins.length - MAX_LOGIN_EVENTS);
+      if (r.success && r.ip) {
+        this.knownGood.delete(r.ip);
+        this.knownGood.set(r.ip, ev.t);
+        if (this.knownGood.size > MAX_KEYS) this.knownGood.delete(this.knownGood.keys().next().value as string);
+      }
+    }
+  }
+
+  /** App-wide login figures for the distributed window (re-evaluated at most once a second). */
+  private stuffing(now: number): StuffingStats | null {
+    const rule = this.dist;
+    if (!rule) return null;
+    if (now - this.lastEval < 1000) return this.lastStats;
+    this.lastEval = now;
+    const since = now - rule.windowSeconds * 1000;
+    let i = 0;
+    while (i < this.logins.length && this.logins[i].t < since) i++;
+    if (i) this.logins.splice(0, i);
+    let failures = 0;
+    const ips = new Set<string>();
+    const users = new Set<string>();
+    for (const e of this.logins) {
+      if (e.ok) continue;
+      failures++;
+      if (e.ip) ips.add(e.ip);
+      if (e.user) users.add(e.user);
+    }
+    const attempts = this.logins.length;
+    const failureRatio = attempts ? failures / attempts : 0;
+    const hit = failures >= rule.minFailures && ips.size >= rule.minIps && users.size >= rule.minUsers && failureRatio >= rule.minFailureRatio;
+    if (hit) {
+      if (now > this.defenceUntil) {
+        this.episodeStart = now;
+        this.episodeReported = false;
+      }
+      this.defenceUntil = now + rule.cooldownSeconds * 1000;
+    }
+    this.lastStats = { failures, attempts, ips: ips.size, users: users.size, failureRatio: Math.round(failureRatio * 100) / 100, since: new Date(this.episodeStart || now).toISOString() };
+    return this.lastStats;
+  }
+
+  /** Is app-wide login defence on, and what should it do for this request? */
+  loginDefence(path: string, ip: string): LoginDefence | null {
+    const rule = this.rules.login;
+    const dist = this.dist;
+    if (!rule || !dist) return null;
+    const now = this.clock();
+    const stats = this.stuffing(now);
+    if (!stats || now > this.defenceUntil || !this.onPaths(rule, path)) return null;
+    const response = dist.response;
+    const seen = ip ? this.knownGood.get(ip) : undefined;
+    const known = seen !== undefined && now - seen < KNOWN_GOOD_MS;
+    const out: LoginDefence = {
+      response,
+      throttle: response === "throttle-unknown" && !known,
+      reason: `Credential stuffing in progress: ${stats.failures} failed logins from ${stats.ips} IPs for ${stats.users} accounts in ${Math.round(dist.windowSeconds / 60)} min`,
+    };
+    if (!this.episodeReported) {
+      this.episodeReported = true;
+      out.episode = stats;
+    }
+    return out;
+  }
+
+  /** Current login-defence state, for status(). */
+  defenceState(): { active: boolean; until: string | null; stats: StuffingStats | null } {
+    const now = this.clock();
+    const stats = this.stuffing(now);
+    const active = now <= this.defenceUntil;
+    return { active, until: active ? new Date(this.defenceUntil).toISOString() : null, stats: active ? stats : null };
+  }
+
+  private onPaths(rule: OutcomeRule, path: string): boolean {
+    const p = (path.split("?")[0] || "/").toLowerCase();
+    return rule.paths.some((t) => {
+      const target = t.toLowerCase();
+      return target.endsWith("*") ? p.startsWith(target.slice(0, -1)) : p === target || p === `${target}/`;
+    });
   }
 
   private recent(map: Map<string, Event[]>, key: string, since: number): Event[] {

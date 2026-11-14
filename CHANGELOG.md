@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Credential stuffing across many IPs.
+
+- **App-wide login defence.** Login protection now also watches all login outcomes together and spots credential stuffing from proxy pools, which per-IP and per-account limits miss: by default 30+ failed logins from 10+ IPs for 10+ accounts with 70%+ failing, within 10 minutes. During an episode, login requests carry `result.challenge` (default response) so your handler can ask for a CAPTCHA or second factor; or use `response: "throttle-unknown"` to throttle IPs without a recent successful login. It never blocks IPs.
+- Each episode is logged once as an incident with counts only (no usernames), even when `logAllowed` is off, so SwarmTech Shield raises a credential-stuffing alert. `status().loginDefence` shows the state.
+
 ## 0.8.0 (2026-11-14)
 
 Per-route fail mode.
