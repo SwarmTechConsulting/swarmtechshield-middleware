@@ -290,6 +290,7 @@ Set `resilience: false` to turn all of this off.
 | `syncUrl` | required | URL of `syncRuleCache`. |
 | `logUrl` | none | URL of `submitTrafficLog`. Omit to turn off logging. |
 | `failMode` | `"open"` | `"open"` allows or `"closed"` blocks requests while no usable rules exist. Replaced by the app's own setting after the first sync. |
+| `failClosedPaths` | `[]` | Paths that fail closed even when `failMode` is open, e.g. `["/login", "/checkout", "/admin"]`. A prefix matches itself and anything below it (`/login` matches `/login/2fa`, not `/loginx`); a trailing `*` matches any continuation (`/api/pay*`). Replaced by the app's own list (set in the console) after the first sync. |
 | `syncIntervalMs` | 30,000 | How often to check for rule changes. |
 | `fullSyncEveryMs` | 300,000 | Download all rules at least this often, even if the version looks unchanged. |
 | `maxStaleMs` | 900,000 | How long to keep enforcing the last good rules during an outage before applying the fail mode. |
@@ -316,10 +317,19 @@ Set `resilience: false` to turn all of this off.
 
 ## When SwarmTech Shield is unreachable
 
+The middleware never needs SwarmTech Shield on the request path: it screens against rules it keeps in memory, so a Shield outage changes nothing until those rules are 15 minutes old. That's also why it's the better choice than calling the `screenRequest` endpoint directly (gateway mode), where every request depends on Shield answering. If your own code does the screening, use the client directly; it is the caching gateway client:
+
+```ts
+const shield = SwarmTechShield.getClient({ connectionKey, syncUrl, logUrl, failClosedPaths: ["/login", "/checkout"] });
+const result = await shield.check({ ip, method, path, userAgent });
+if (!result.allowed) return reject(result);
+```
+
+
 | Situation | What happens |
 |---|---|
 | Cold start, SwarmTech Shield down | The first request waits up to 1.5 s for rules; after that no request waits. `failMode` applies and a retry runs every 5 s in the background. |
-| Outage after rules loaded | Keeps enforcing the last good rules for `maxStaleMs` (15 min), then applies the app's fail mode. |
+| Outage after rules loaded | Keeps enforcing the last good rules for `maxStaleMs` (15 min), then applies the app's fail mode, with its fail-closed paths refused and everything else let through. |
 | Key rejected or app paused | **Lets all traffic through** (`source: "disabled"`), calls `onError`, and retries every 30 s. A wrong key or a paused app never takes your site down. |
 | Sync rate-limited (HTTP 429) | Keeps enforcing the last good rules and waits for the server's `Retry-After` (5 s to 5 min) before trying again. |
 | Log upload fails | Events stay queued (up to `maxQueue`) and are retried after 10 s. |

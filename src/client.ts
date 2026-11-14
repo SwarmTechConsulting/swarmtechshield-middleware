@@ -36,6 +36,7 @@ import {
 } from "./defence.ts";
 import { Resilience, type ResilienceOptions, type ResilienceState } from "./resilience.ts";
 import type { IpSource } from "./ip.ts";
+import { normaliseFailClosedPaths, pathFailsClosed } from "./failMode.ts";
 
 export const SDK_VERSION = "0.7.0";
 
@@ -51,6 +52,9 @@ export interface ShieldOptions {
   /** What to do before rules have ever loaded, or when they are older than `maxStaleMs`.
    *  Replaced by the app's own setting once the first sync succeeds. Default "open". */
   failMode?: FailMode;
+  /** Paths that fail closed even when the fail mode is open (login, payment, admin...).
+   *  Replaced by the app's own list once the first sync succeeds. See failMode.ts for matching. */
+  failClosedPaths?: string[];
   /** How often to check for rule changes. Default 30 s. */
   syncIntervalMs?: number;
   /** Ask for a full rule download at least this often, even if the version looks unchanged. Default 5 min. */
@@ -185,6 +189,8 @@ interface SyncResponse {
   virtual_patches?: VirtualPatch[];
   /** Service identities (token hashes only) for this app. */
   service_identities?: ServiceIdentity[];
+  /** Paths that fail closed even when fail_mode is open. */
+  fail_closed_paths?: string[];
   error?: string;
 }
 
@@ -234,7 +240,7 @@ function resolveInspection(opt: boolean | InspectionConfig | undefined): Inspect
 
 export class ShieldClient {
   readonly opts: Required<
-    Omit<ShieldOptions, "logUrl" | "onError" | "fetch" | "now" | "burst" | "inspection" | "decoys" | "outcomes" | "dependencies" | "reportDependencies" | "verification" | "resilience">
+    Omit<ShieldOptions, "logUrl" | "onError" | "fetch" | "now" | "burst" | "inspection" | "decoys" | "outcomes" | "dependencies" | "reportDependencies" | "verification" | "resilience" | "failClosedPaths">
   > & Pick<ShieldOptions, "logUrl" | "onError" | "burst">;
 
   /** Resolved inspection config, or null when inspection is off. */
@@ -256,6 +262,7 @@ export class ShieldClient {
   private blocklist: BlockEntry[] = [];
   private version: string | number | null = null;
   private serverFailMode: FailMode | null = null;
+  private failClosedPaths: string[] = [];
   private lastSyncOk = 0;
   private lastSyncAttempt = 0;
   private lastFullSync = 0;
@@ -284,6 +291,7 @@ export class ShieldClient {
   constructor(options: ShieldOptions) {
     if (!options || !options.connectionKey) throw new Error("SwarmTech Shield: connectionKey is required");
     if (!options.syncUrl) throw new Error("SwarmTech Shield: syncUrl is required");
+    this.failClosedPaths = normaliseFailClosedPaths(options.failClosedPaths);
     this.opts = {
       connectionKey: options.connectionKey,
       syncUrl: options.syncUrl,
@@ -349,8 +357,7 @@ export class ShieldClient {
       if (this.disabled) {
         result = this.simple("allowed", "SwarmTech Shield disabled: connection key rejected or app paused", "disabled");
       } else if (!this.lastSyncOk || now - this.lastSyncOk > this.opts.maxStaleMs) {
-        const mode = this.serverFailMode ?? this.opts.failMode;
-        result = mode === "closed"
+        result = this.failModeFor(path) === "closed"
           ? this.simple("blocked", "Fail closed: rules unavailable", "fail_closed")
           : this.simple("allowed", "Fail open: rules unavailable", "fail_open");
       } else if (identity && identity.kind === "service") {
@@ -513,8 +520,7 @@ export class ShieldClient {
       };
     } catch (err) {
       this.report(err as Error, "check");
-      const mode = this.serverFailMode ?? this.opts.failMode;
-      const r = mode === "closed"
+      const r = this.failModeFor(String(info?.path || "/")) === "closed"
         ? this.simple("blocked", "Fail closed: internal error", "fail_closed")
         : this.simple("allowed", "Fail open: internal error", "fail_open");
       return { ...r, durationMs: Math.round((nowPerf() - t0) * 100) / 100 };
@@ -654,6 +660,12 @@ export class ShieldClient {
     if (prev) this.lastFullSync = 0;
   }
 
+  /** The fail mode for a path: closed for a listed path, else the app's mode. */
+  private failModeFor(path: string): FailMode {
+    if (pathFailsClosed(path, this.failClosedPaths)) return "closed";
+    return this.serverFailMode ?? this.opts.failMode;
+  }
+
   /** Snapshot of the client's state, for health endpoints and debugging. */
   status() {
     return {
@@ -665,6 +677,7 @@ export class ShieldClient {
       blocklist: this.blocklist.length,
       lastSyncOk: this.lastSyncOk ? new Date(this.lastSyncOk).toISOString() : null,
       failMode: this.serverFailMode ?? this.opts.failMode,
+      failClosedPaths: this.failClosedPaths,
       queuedLogs: this.queuedCount(),
       droppedLogs: this.droppedLogs,
       inspection: this.inspectionConfig?.mode ?? "off",
@@ -731,6 +744,7 @@ export class ShieldClient {
       this.disabled = false;
       if (body.fail_mode === "fail_closed") this.serverFailMode = "closed";
       else if (body.fail_mode === "fail_open") this.serverFailMode = "open";
+      if (Array.isArray(body.fail_closed_paths)) this.failClosedPaths = normaliseFailClosedPaths(body.fail_closed_paths);
       if (typeof body.under_attack === "boolean") this.resilience?.setConsoleFlag(body.under_attack);
       if (!body.up_to_date) {
         if (!Array.isArray(body.rules) || !Array.isArray(body.blocklist)) throw new Error("Sync response missing rules or blocklist");
