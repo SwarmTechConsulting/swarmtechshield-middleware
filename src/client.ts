@@ -37,7 +37,7 @@ import {
 import { Resilience, type ResilienceOptions, type ResilienceState } from "./resilience.ts";
 import type { IpSource } from "./ip.ts";
 
-export const SDK_VERSION = "0.6.0";
+export const SDK_VERSION = "0.7.0";
 
 export type FailMode = "open" | "closed";
 

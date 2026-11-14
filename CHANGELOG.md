@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 (2026-11-14)
+
 Client IPs that can't be spoofed.
 
 - **Next.js trusts `x-real-ip` only on Vercel.** Off Vercel (detected from Vercel's system environment variables), `x-real-ip` and `x-vercel-ip-country` could come from the visitor, who could then slip past an IP block or get someone else's IP blocked. They are no longer read there: set `trustedHeader`, `trustedProxyCount` or `getClientIp`. Until you do, the IP is left empty (IP rules can't apply) and `onError` explains once. **Behaviour change** for self-hosted Next.js.
