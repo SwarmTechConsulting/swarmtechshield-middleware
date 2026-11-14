@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0 (2026-11-14)
+
 Per-route fail mode.
 
 - **`failClosedPaths`** (and the app's list from the console, delivered on sync as `fail_closed_paths`): paths that fail closed when no usable rules exist, while every other route follows the app's fail mode. Keep login, payment and admin refused during an outage without taking the whole site down. Applies before the first sync, after rules go stale (`maxStaleMs`), and on internal errors. `status().failClosedPaths` shows the list in force.
