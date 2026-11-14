@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Client IPs that can't be spoofed.
+
+- **Next.js trusts `x-real-ip` only on Vercel.** Off Vercel (detected from Vercel's system environment variables), `x-real-ip` and `x-vercel-ip-country` could come from the visitor, who could then slip past an IP block or get someone else's IP blocked. They are no longer read there: set `trustedHeader`, `trustedProxyCount` or `getClientIp`. Until you do, the IP is left empty (IP rules can't apply) and `onError` explains once. **Behaviour change** for self-hosted Next.js.
+- **Generic `screenRequest` needs an explicit IP source** for the same reason: it no longer falls back to `X-Forwarded-For`. Pass `getClientIp` (for `Deno.serve`, `info.remoteAddr.hostname`), `trustedHeader` or `trustedProxyCount`. **Behaviour change.**
+- **Every adapter reports where the IP came from** and how far it can be trusted (`platform`, `configured`, `socket`, `assumed`, `none`) in full syncs and `client.status().ipSource`, so the console can warn about spoofable setups. Base44's `X-Forwarded-For` default is reported as `assumed`.
+- **Express warns when it looks to be behind an unconfigured proxy** (a private peer address with `X-Forwarded-For` set), where every visitor would appear as the proxy's IP.
+
 ## 0.6.0 (2026-11-14)
 
 - **Old-name aliases removed.** Only the SwarmTech Shield names remain: `SwarmTechShield`, `ShieldClient`, `ShieldOptions` and Express's `req.swarmtechshield`. The GitHub repository is now `SwarmTechConsulting/swarmtechshield-middleware`.

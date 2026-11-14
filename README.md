@@ -63,7 +63,7 @@ export const middleware = SwarmTechShield.nextjs({
 export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };
 ```
 
-On Vercel the client IP comes from `x-real-ip` and the country from `x-vercel-ip-country`, both set by Vercel.
+On Vercel the client IP comes from `x-real-ip` and the country from `x-vercel-ip-country`, both set by Vercel. **Anywhere else** (`next start` on your own server, Docker, another host) those headers could come from the visitor, so they aren't read: pass `trustedHeader` (the header your proxy overwrites), `trustedProxyCount` or `getClientIp`. Until you do, IP rules can't apply and `onError` says so once.
 
 ### Cloudflare Workers
 
@@ -109,6 +109,8 @@ There is no `waitUntil` in this environment. So on the requests where a log flus
 
 ```ts
 const result = await SwarmTechShield.screenRequest(request, { connectionKey, syncUrl, logUrl, trustedHeader: "x-real-ip" });
+// Deno.serve: the real peer address is in the handler's second argument.
+//   Deno.serve((request, info) => SwarmTechShield.screenRequest(request, { connectionKey, syncUrl, logUrl, getClientIp: () => info.remoteAddr.hostname }))
 // or, with your own request parsing:
 const client = SwarmTechShield.getClient({ connectionKey, syncUrl, logUrl });
 const result = await client.check({ ip, method, path, userAgent, bodySize, country });
@@ -118,12 +120,16 @@ const result = await client.check({ ip, method, path, userAgent, bodySize, count
 
 Every IP-based feature depends on getting the real client IP. Requests can include their own `X-Forwarded-For`, so **the first value in that header can be faked**. If you used it, an attacker could pose as an allowlisted IP. Defaults per adapter:
 
-| Adapter | Default source | Override |
-|---|---|---|
-| Express | `req.ip`, which follows `app.set("trust proxy", …)` | `trustedHeader`, `trustedProxyCount`, `getClientIp` |
-| Next.js | `x-real-ip`, then `X-Forwarded-For` counted from the right | same |
-| Cloudflare | `CF-Connecting-IP` | same |
-| Base44 / generic | `X-Forwarded-For` counted from the right (`trustedProxyCount`, default 1) | same |
+| Adapter | Default source | Reported as | Override |
+|---|---|---|---|
+| Express | `req.ip`, which follows `app.set("trust proxy", …)`, else the socket address | `configured` / `socket` | `trustedHeader`, `trustedProxyCount`, `getClientIp` |
+| Next.js on Vercel | `x-real-ip` | `platform` | same |
+| Next.js elsewhere | **none**: the IP stays empty until you choose a source | `none` | same |
+| Cloudflare | `CF-Connecting-IP` | `platform` | same |
+| Base44 | `X-Forwarded-For` counted from the right (one proxy) | `assumed` | same |
+| Generic `screenRequest` | **none**: a bare `Request` has no trustworthy source | `none` | same |
+
+The adapter reports how it found the IP (`client.status().ipSource`) with each full sync, and the SwarmTech Shield console warns on any app whose IPs could be spoofed (`none` or `assumed`) or that looks to be behind an unconfigured proxy (Express seeing a private address with `X-Forwarded-For` set, which would make every visitor look like the proxy).
 
 `trustedProxyCount` is the number of proxies **you** run that append to `X-Forwarded-For`. Only set `trustedHeader` to a header your own infrastructure writes and overwrites.
 

@@ -7,7 +7,7 @@
 // Pass trustedHeader / trustedProxyCount / getClientIp to override.
 
 import { getClient, type CheckResult } from "../client.ts";
-import { cleanIp, clientIpFromHeaders } from "../ip.ts";
+import { cleanIp, clientIpFromHeaders, isPrivateIp, BEHIND_PROXY, type IpSource } from "../ip.ts";
 import { bodySizeFrom, type AdapterOptions } from "./shared.ts";
 
 // Minimal structural types so the package has no dependency on @types/express.
@@ -62,6 +62,23 @@ function header(req: ExpressLikeRequest, name: string): string | undefined {
 export function express(options: ExpressOptions) {
   const client = getClient({ timers: true, ...options });
   const useHeaders = !!(options.trustedHeader || options.trustedProxyCount);
+  let warnedProxy = false;
+
+  // The client IP and how far it can be trusted (reported to the console on sync).
+  const resolveIp = (req: ExpressLikeRequest): { ip: string; source: IpSource } => {
+    if (options.getClientIp) return { ip: cleanIp(options.getClientIp(req)), source: { method: "getClientIp", trust: "configured" } };
+    if (useHeaders) {
+      const method = options.trustedHeader ? `header:${options.trustedHeader.toLowerCase()}` : `x-forwarded-for:${Math.max(1, Math.floor(options.trustedProxyCount || 1))}`;
+      return { ip: clientIpFromHeaders((h) => header(req, h), options, [], req.socket?.remoteAddress), source: { method, trust: "configured" } };
+    }
+    const socket = cleanIp(req.socket?.remoteAddress);
+    const viaExpress = cleanIp(req.ip);
+    // Express's "trust proxy" setting makes req.ip differ from the socket address.
+    if (viaExpress && socket && viaExpress !== socket) return { ip: viaExpress, source: { method: "express:trust-proxy", trust: "configured" } };
+    const ip = viaExpress || socket;
+    const proxied = !!ip && isPrivateIp(ip) && !!header(req, "x-forwarded-for");
+    return { ip, source: { method: "socket", trust: "socket", ...(proxied ? { warning: BEHIND_PROXY } : {}) } };
+  };
 
   return function swarmTechShield(req: ExpressLikeRequest, res: ExpressLikeResponse, next: NextFunction): void {
     // Errors thrown by later handlers go to Express's error handling (as Express itself does),
@@ -77,11 +94,15 @@ export function express(options: ExpressOptions) {
 
     let ip: string;
     try {
-      ip = options.getClientIp
-        ? cleanIp(options.getClientIp(req))
-        : useHeaders
-          ? clientIpFromHeaders((h) => header(req, h), options, [], req.socket?.remoteAddress)
-          : cleanIp(req.ip || req.socket?.remoteAddress);
+      const resolved = resolveIp(req);
+      ip = resolved.ip;
+      client.noteIpSource(resolved.source);
+      if (resolved.source.warning && !warnedProxy) {
+        warnedProxy = true;
+        const e = new Error(resolved.source.warning);
+        if (options.onError) options.onError(e, "config");
+        else console.warn(`[swarmtechshield] ${e.message}`);
+      }
     } catch {
       ip = "";
     }

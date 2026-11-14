@@ -13,7 +13,7 @@ export interface MockState {
   rules: unknown[];
   blocklist: unknown[];
   down: boolean;
-  syncCalls: { client_version: unknown }[];
+  syncCalls: { client_version: unknown; ip_source?: unknown }[];
   logBatches: unknown[][];
   logStatus: number | null;
   /** Force syncRuleCache to answer with this status (and Retry-After, if set). */
@@ -72,7 +72,7 @@ export async function startMock(init: Partial<MockState> = {}): Promise<Mock> {
       const authorised = body.connection_key === state.key && state.appStatus === "active";
 
       if (req.url === "/functions/syncRuleCache") {
-        state.syncCalls.push({ client_version: body.client_version });
+        state.syncCalls.push({ client_version: body.client_version, ip_source: body.ip_source });
         if (state.syncStatus) {
           return send(state.syncStatus, { error: "forced" }, state.syncRetryAfter ? { "retry-after": state.syncRetryAfter } : {});
         }
