@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.0 (2026-11-15)
+
 Route exemptions, and one engine with SwarmTech Shield.
 
 - **`criteria.exclude_paths`.** Any rule (every type, rate limits included) can list path patterns it never applies to, such as `^/webhooks/` for a webhook receiver a bot rule would otherwise block. Patterns run on the linear-time matcher, like `criteria.path`. SwarmTech Shield uses this for per-route exemptions from managed rule packs. Versions before this ignore the field, so the rule applies everywhere there.
