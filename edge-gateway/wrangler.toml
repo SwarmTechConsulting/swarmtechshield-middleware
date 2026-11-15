@@ -1,0 +1,17 @@
+name = "swarmtech-shield-gateway"
+main = "src/worker.ts"
+compatibility_date = "2026-11-01"
+
+# Put the Worker in front of your site: the zone must be on Cloudflare.
+# routes = [{ pattern = "shop.example.com/*", zone_name = "example.com" }]
+
+[vars]
+# Where allowed requests go. Not the public hostname, or requests would loop.
+ORIGIN_URL = "https://origin.example.com"
+# From the SwarmTech Shield console: Protect > Protected Apps > your app > Install the middleware.
+SHIELD_SYNC_URL = "https://your-shield-app.base44.app/functions/syncRuleCache"
+SHIELD_LOG_URL = "https://your-shield-app.base44.app/functions/submitTrafficLog"
+
+# Secrets (never in this file):
+#   npx wrangler secret put SHIELD_CONNECTION_KEY
+#   npx wrangler secret put SHIELD_ORIGIN_SECRET     # any long random string; the origin checks it

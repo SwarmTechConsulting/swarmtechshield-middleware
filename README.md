@@ -105,6 +105,23 @@ export default async function (req: Request): Promise<Response> {
 
 There is no `waitUntil` in this environment. So on the requests where a log flush is due, the function waits for it, for at most `backgroundWaitMs` (default 500 ms). The other requests don't wait at all.
 
+### Edge gateway (Cloudflare Workers, no code changes in your app)
+
+Put SwarmTech Shield in front of any site as a reverse proxy at Cloudflare's edge: requests are screened there and only allowed ones are forwarded to your origin.
+
+```ts
+import { edgeGateway } from "@swarmtechshield/middleware";
+export default edgeGateway((env) => ({
+  origin: env.ORIGIN_URL,                  // where your app really lives
+  originSecret: env.SHIELD_ORIGIN_SECRET,  // sent as x-shield-edge so the origin can refuse bypass
+  connectionKey: env.SHIELD_CONNECTION_KEY,
+  syncUrl: env.SHIELD_SYNC_URL,
+  logUrl: env.SHIELD_LOG_URL,
+}));
+```
+
+The [`edge-gateway/`](edge-gateway/) folder is a ready-to-deploy Worker (wrangler.toml, secrets, and how to lock the origin so traffic can't go around the gateway). The origin's status codes feed response signals; an unreachable origin answers 502 (504 after `originTimeoutMs`, default 30 s); redirects go back to the visitor; WebSockets pass through.
+
 ### Anything else (Deno.serve, Bun.serve, Hono, custom servers)
 
 ```ts

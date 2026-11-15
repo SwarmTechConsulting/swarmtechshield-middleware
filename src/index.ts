@@ -7,6 +7,7 @@
 import { express } from "./adapters/express.ts";
 import { base44, cloudflare, nextjs, screenRequest } from "./adapters/fetch.ts";
 import { decorate, toResponse } from "./adapters/shared.ts";
+import { edgeGateway } from "./adapters/edge.ts";
 import { createClient, getClient } from "./client.ts";
 import * as engine from "./engine.ts";
 import type { ShieldOptions } from "./client.ts";
@@ -27,6 +28,7 @@ export const SwarmTechShield = {
   cloudflare,
   base44,
   screenRequest,
+  edgeGateway,
   toResponse,
   decorate,
   reportOutcome,
@@ -37,7 +39,7 @@ export const SwarmTechShield = {
 
 export default SwarmTechShield;
 
-export { express, nextjs, cloudflare, base44, screenRequest, toResponse, decorate, reportOutcome, createClient, getClient, engine };
+export { express, nextjs, cloudflare, base44, screenRequest, edgeGateway, toResponse, decorate, reportOutcome, createClient, getClient, engine };
 export { ShieldClient, SDK_VERSION } from "./client.ts";
 export type { ShieldOptions, RequestInfo, CheckResult, CheckSource, FailMode } from "./client.ts";
 export type { ExpressOptions } from "./adapters/express.ts";
@@ -73,3 +75,5 @@ export { DEFAULT_PRIORITY_PATHS } from "./resilience.ts";
 export type { ResilienceOptions, ResilienceState } from "./resilience.ts";
 export { ResponseSignals, STATIC_ASSETS } from "./responses.ts";
 export type { ResponseSignalOptions, ResponseSignal, SignalThreshold } from "./responses.ts";
+export { EDGE_HEADER } from "./adapters/edge.ts";
+export type { EdgeOptions, EdgeConfig } from "./adapters/edge.ts";
