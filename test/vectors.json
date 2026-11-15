@@ -1376,6 +1376,217 @@
           "ip_or_range": "0.0.0.0/0"
         }
       ]
+    },
+    {
+      "name": "Excluded path is exempt from a block rule",
+      "plan_item": "0.11",
+      "request": {
+        "app_id": "app_a",
+        "source_ip": "198.51.100.20",
+        "method": "POST",
+        "path": "/webhooks/stripe",
+        "user_agent": "Stripe/1.0"
+      },
+      "rules": [
+        {
+          "active": true,
+          "deployment_state": "enforced",
+          "id": "r1",
+          "name": "Block automation",
+          "type": "pattern",
+          "action": "block",
+          "priority": 10,
+          "criteria": {
+            "signatures": [
+              "stripe"
+            ],
+            "exclude_paths": [
+              "^/webhooks/"
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "verdict": "allowed"
+      }
+    },
+    {
+      "name": "The same rule still applies outside the excluded path",
+      "plan_item": "0.11",
+      "request": {
+        "app_id": "app_a",
+        "source_ip": "198.51.100.20",
+        "method": "POST",
+        "path": "/checkout",
+        "user_agent": "Stripe/1.0"
+      },
+      "rules": [
+        {
+          "active": true,
+          "deployment_state": "enforced",
+          "id": "r1",
+          "name": "Block automation",
+          "type": "pattern",
+          "action": "block",
+          "priority": 10,
+          "criteria": {
+            "signatures": [
+              "stripe"
+            ],
+            "exclude_paths": [
+              "^/webhooks/"
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "verdict": "blocked",
+        "triggered": "Block automation"
+      }
+    },
+    {
+      "name": "Excluded path is exempt from a rate limit",
+      "plan_item": "0.11",
+      "request": {
+        "app_id": "app_a",
+        "source_ip": "198.51.100.21",
+        "method": "POST",
+        "path": "/webhooks/github"
+      },
+      "rules": [
+        {
+          "active": true,
+          "deployment_state": "enforced",
+          "id": "r2",
+          "name": "API limit",
+          "type": "rate_limit",
+          "action": "throttle",
+          "priority": 10,
+          "criteria": {
+            "max_requests": 10,
+            "window_seconds": 60,
+            "exclude_paths": [
+              "^/webhooks/"
+            ]
+          }
+        }
+      ],
+      "counts": {
+        "60": 50
+      },
+      "expected": {
+        "verdict": "allowed"
+      }
+    },
+    {
+      "name": "Exclusions apply to reputation rules too",
+      "plan_item": "0.11",
+      "request": {
+        "app_id": "app_a",
+        "source_ip": "198.51.100.22",
+        "method": "GET",
+        "path": "/health",
+        "threat_lists": [
+          "datacenter"
+        ]
+      },
+      "rules": [
+        {
+          "active": true,
+          "deployment_state": "enforced",
+          "id": "r3",
+          "name": "Block hosting",
+          "type": "reputation",
+          "action": "block",
+          "priority": 10,
+          "criteria": {
+            "lists": [
+              "datacenter"
+            ],
+            "exclude_paths": [
+              "^/health$"
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "verdict": "allowed"
+      }
+    },
+    {
+      "name": "Rate limits run in priority order with other rules",
+      "plan_item": "0.11",
+      "request": {
+        "app_id": "app_a",
+        "source_ip": "198.51.100.23",
+        "method": "GET",
+        "path": "/search"
+      },
+      "rules": [
+        {
+          "active": true,
+          "deployment_state": "enforced",
+          "id": "r4",
+          "name": "Search limit",
+          "type": "rate_limit",
+          "action": "throttle",
+          "priority": 10,
+          "criteria": {
+            "path": "^/search",
+            "max_requests": 5,
+            "window_seconds": 60
+          }
+        },
+        {
+          "active": true,
+          "deployment_state": "enforced",
+          "id": "r5",
+          "name": "Block search",
+          "type": "pattern",
+          "action": "block",
+          "priority": 20,
+          "criteria": {
+            "path": "^/search"
+          }
+        }
+      ],
+      "counts": {
+        "60": 9
+      },
+      "expected": {
+        "verdict": "throttled",
+        "triggered": "Search limit"
+      }
+    },
+    {
+      "name": "IPv4-compatible IPv6 matches an IPv4 range",
+      "plan_item": "0.11",
+      "request": {
+        "app_id": "app_a",
+        "source_ip": "::203.0.113.5",
+        "method": "GET",
+        "path": "/"
+      },
+      "rules": [
+        {
+          "active": true,
+          "deployment_state": "enforced",
+          "id": "r6",
+          "name": "Block range",
+          "type": "ip_block",
+          "action": "block",
+          "priority": 10,
+          "criteria": {
+            "cidrs": [
+              "203.0.113.0/24"
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "verdict": "blocked",
+        "triggered": "Block range"
+      }
     }
   ]
 }

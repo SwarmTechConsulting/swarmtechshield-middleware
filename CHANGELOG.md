@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Route exemptions, and one engine with SwarmTech Shield.
+
+- **`criteria.exclude_paths`.** Any rule (every type, rate limits included) can list path patterns it never applies to, such as `^/webhooks/` for a webhook receiver a bot rule would otherwise block. Patterns run on the linear-time matcher, like `criteria.path`. SwarmTech Shield uses this for per-route exemptions from managed rule packs. Versions before this ignore the field, so the rule applies everywhere there.
+- **SwarmTech Shield now runs this exact engine** (`src/engine.ts`, copied byte for byte and checked with `scripts/check-engine.mjs`), so the gateway and the middleware always reach the same verdict. `test/vectors.json` is run by both.
+- IPv4-compatible IPv6 addresses (`::203.0.113.5`) are treated as the IPv4 address, so they can't slip past an IPv4 rule. `explainRule` describes reputation rules and exemptions.
+
 ## 0.10.0 (2026-11-15)
 
 Source reputation rules.
