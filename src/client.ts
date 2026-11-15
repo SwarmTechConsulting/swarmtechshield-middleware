@@ -41,7 +41,7 @@ import { normaliseFailClosedPaths, pathFailsClosed } from "./failMode.ts";
 import { ThreatLists, type ThreatListPayload } from "./threatLists.ts";
 import { ResponseSignals, type ResponseSignalOptions, type ResponseSignal } from "./responses.ts";
 
-export const SDK_VERSION = "0.11.0";
+export const SDK_VERSION = "0.12.0";
 
 export type FailMode = "open" | "closed";
 
