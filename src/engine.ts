@@ -37,6 +37,8 @@ export interface RuleCriteria {
   window_seconds?: number | string;
   /** reputation rules: platform threat lists (spamhaus_drop, tor, datacenter). */
   lists?: string[];
+  /** Route exemptions: the rule never applies to a path matching one of these patterns. */
+  exclude_paths?: string[];
   [key: string]: unknown;
 }
 
@@ -204,6 +206,9 @@ export function parseIp(ip: string): ParsedIp | null {
   const v6 = parseV6(s);
   if (v6 === null) return null;
   if (v6 >> 32n === 0xffffn) return { v: 4, n: v6 & 0xffffffffn };
+  // IPv4-compatible form (::a.b.c.d), deprecated but still accepted by some parsers:
+  // treat it as the IPv4 address so it can't slip past an IPv4 rule.
+  if (v6 >> 32n === 0n && s.includes(".")) return { v: 4, n: v6 & 0xffffffffn };
   return { v: 6, n: v6 };
 }
 
@@ -384,8 +389,19 @@ function toNum(x: unknown): number | null {
  * Does a single rule match the request? Every criterion that is set must match.
  * rate_limit rules need `rateCount`; without it they never match.
  */
+/**
+ * Route exemptions (criteria.exclude_paths): a rule never applies to a matching
+ * path, whatever its type. Same as SwarmTech Shield's engine.
+ */
+export function pathExcluded(rule: Rule, path: string | undefined): boolean {
+  const ex = rule.criteria?.exclude_paths;
+  if (!Array.isArray(ex) || !ex.length) return false;
+  return ex.some((p) => typeof p === "string" && p !== "" && textMatches(p, String(path || "/")));
+}
+
 export function matchRule(rule: Rule, ctx: RequestContext, rateCount?: RateCounter): boolean {
   const c: RuleCriteria = rule.criteria || {};
+  if (pathExcluded(rule, ctx.path)) return false;
   switch (rule.type) {
     case "ip_block":
     case "ip_allow": {
@@ -446,11 +462,20 @@ export function matchRule(rule: Rule, ctx: RequestContext, rateCount?: RateCount
 /* Explanations                                                        */
 /* ------------------------------------------------------------------ */
 
+const LIST_NAMES: Record<string, string> = { spamhaus_drop: "Spamhaus DROP", tor: "Tor exit relays", datacenter: "cloud and hosting providers" };
+
 export function explainRule(rule: Rule): string {
   const c: RuleCriteria = rule.criteria || {};
   const verb = rule.action === "allow" ? "Allows" : rule.action === "throttle" ? "Throttles" : "Blocks";
   const parts: string[] = [];
   switch (rule.type) {
+    case "reputation": {
+      const lists = (Array.isArray(c.lists) ? c.lists : []).map((l) => LIST_NAMES[String(l)] || String(l));
+      parts.push(`${verb} requests from ${lists.join(" or ") || "no list"}`);
+      if (c.method && c.method !== "*") parts.push(`Matches ${c.method} requests`);
+      if (c.path && c.path !== "*") parts.push(`Path matches pattern: ${c.path}`);
+      break;
+    }
     case "ip_block":
     case "ip_allow": {
       const v = rule.type === "ip_allow" ? "Allows" : verb;
@@ -483,6 +508,8 @@ export function explainRule(rule: Rule): string {
     }
   }
   if (parts.length === 0) return "No criteria defined — this rule will not match any traffic.";
+  const ex = Array.isArray(c.exclude_paths) ? c.exclude_paths.filter((p) => typeof p === "string" && p) : [];
+  if (ex.length) parts.push(`Never applies to paths matching: ${ex.join(", ")}`);
   return parts.join(". ") + ".";
 }
 

@@ -121,3 +121,14 @@ test("detectConflicts warns about overlapping allow and block rules", () => {
   assert.equal(w.length, 1);
   assert.match(w[0], /Office/);
 });
+
+test("explanations cover reputation rules and route exemptions", () => {
+  const text = explainRule({ type: "reputation", action: "block", criteria: { lists: ["tor"], path: "^/admin", exclude_paths: ["^/admin/health"] } });
+  assert.match(text, /Blocks requests from Tor exit relays/);
+  assert.match(text, /Never applies to paths matching: \^\/admin\/health/);
+});
+
+test("exclusions ignore empty and non-string entries", () => {
+  const rule = { type: "pattern", action: "block", criteria: { path: "^/a", exclude_paths: ["", 5, null] } } as never;
+  assert.ok(matchRule(rule, { source_ip: "1.2.3.4", path: "/a" }));
+});
