@@ -1,0 +1,15 @@
+{
+  "name": "swarmtech-shield-edge-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@swarmtechshield/middleware": "^0.13.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
