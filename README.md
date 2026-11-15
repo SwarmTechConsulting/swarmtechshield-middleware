@@ -88,7 +88,7 @@ The client IP comes from `CF-Connecting-IP` and the country from `request.cf`.
 ### Base44 backend functions (Deno)
 
 ```ts
-import { SwarmTechShield } from "npm:@swarmtechshield/middleware@0.10.0";
+import { SwarmTechShield } from "npm:@swarmtechshield/middleware@0.11.0";
 
 export default async function (req: Request): Promise<Response> {
   const result = await SwarmTechShield.base44(req, {

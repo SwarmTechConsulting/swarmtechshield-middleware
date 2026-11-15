@@ -40,7 +40,7 @@ import type { IpSource } from "./ip.ts";
 import { normaliseFailClosedPaths, pathFailsClosed } from "./failMode.ts";
 import { ThreatLists, type ThreatListPayload } from "./threatLists.ts";
 
-export const SDK_VERSION = "0.10.0";
+export const SDK_VERSION = "0.11.0";
 
 export type FailMode = "open" | "closed";
 
