@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0 (2026-11-15)
+
 Source reputation rules.
 
 - **`reputation` rules are enforced.** A rule of type `reputation` (`criteria.lists`, optional `method` and `path`) matches when the source IP is on one of the platform threat lists: `spamhaus_drop`, `tor` or `datacenter`. Lists arrive in the sync response as `threat_lists`, only those your rules use and only when the version you hold (`threat_list_versions`, sent on full syncs) is out of date. Matching is in memory (merged ranges, bisection) and identical to SwarmTech Shield's. `status().threatLists` shows the lists held. Versions before 0.10.0 ignore these rules.
