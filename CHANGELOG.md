@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0 (2026-11-15)
+
 Edge gateway.
 
 - **`edgeGateway()`** runs SwarmTech Shield as a reverse proxy on Cloudflare Workers: every request is screened at the edge with cached rules, and only allowed ones are forwarded to `origin`, so the app needs no code changes and a flood never reaches it or calls SwarmTech Shield per request. It sends `x-shield-edge: <originSecret>` (removing any copy a visitor sent) so the origin can refuse bypass, adds X-Forwarded-For/-Host/-Proto and X-Real-IP, drops hop-by-hop headers, passes redirects and WebSockets back untouched, feeds the origin's status to response signals, and answers 502/504 when the origin is down. Refuses an origin that is its own host (a loop).
