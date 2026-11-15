@@ -71,3 +71,5 @@ export type {
 } from "./defence.ts";
 export { DEFAULT_PRIORITY_PATHS } from "./resilience.ts";
 export type { ResilienceOptions, ResilienceState } from "./resilience.ts";
+export { ResponseSignals, STATIC_ASSETS } from "./responses.ts";
+export type { ResponseSignalOptions, ResponseSignal, SignalThreshold } from "./responses.ts";

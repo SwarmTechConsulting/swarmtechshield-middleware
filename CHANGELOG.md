@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Response signals.
+
+- **The middleware now acts on what your app answered.** 40 responses of 404 in 60 s from one IP (forced browsing, enumeration) block it on this server; 25 responses of 401/403 in 60 s (token guessing, access probing) throttle it; 50 responses of 5xx in 60 s across the app log one incident. Each is logged as an incident, and SwarmTech Shield raises an alert. Static assets never count. Express reports statuses on its own; elsewhere call `result.reportResponse(status)`. Configure with `responseSignals`, or set it to `false`. `status().responseSignals` shows the state.
+
 ## 0.11.0 (2026-11-15)
 
 Route exemptions, and one engine with SwarmTech Shield.
