@@ -39,6 +39,7 @@ import { Resilience, type ResilienceOptions, type ResilienceState } from "./resi
 import type { IpSource } from "./ip.ts";
 import { normaliseFailClosedPaths, pathFailsClosed } from "./failMode.ts";
 import { ThreatLists, type ThreatListPayload } from "./threatLists.ts";
+import { ResponseSignals, type ResponseSignalOptions, type ResponseSignal } from "./responses.ts";
 
 export const SDK_VERSION = "0.11.0";
 
@@ -101,6 +102,9 @@ export interface ShieldOptions {
   verification?: boolean;
   /** Under-attack mode and load shedding for application-layer floods. Default on. false disables. */
   resilience?: ResilienceOptions | false;
+  /** Act on what the app answered: 404 floods (block), 401/403 floods (throttle), 5xx spikes (log).
+   *  Default on; Express reports statuses itself, elsewhere call result.reportResponse(status). false disables. */
+  responseSignals?: ResponseSignalOptions | false;
   /** Run background timers for sync and log flushing (long-running servers only). Default false. */
   timers?: boolean;
   /** Called on sync/log failures and configuration problems. Never throws into your app. */
@@ -163,6 +167,12 @@ export interface CheckResult {
   shed?: boolean;
   /** Seconds to put in Retry-After for a shed request. */
   retryAfterSeconds?: number;
+  /**
+   * Tell the middleware the status your app answered with, for response signals
+   * (404 floods, 401/403 floods, 5xx spikes). The Express adapter calls it for you.
+   * Never throws.
+   */
+  reportResponse?: (status: number) => void;
 }
 
 interface LogEvent {
@@ -251,7 +261,7 @@ function resolveInspection(opt: boolean | InspectionConfig | undefined): Inspect
 
 export class ShieldClient {
   readonly opts: Required<
-    Omit<ShieldOptions, "logUrl" | "onError" | "fetch" | "now" | "burst" | "inspection" | "decoys" | "outcomes" | "dependencies" | "reportDependencies" | "verification" | "resilience" | "failClosedPaths">
+    Omit<ShieldOptions, "logUrl" | "onError" | "fetch" | "now" | "burst" | "inspection" | "decoys" | "outcomes" | "dependencies" | "reportDependencies" | "verification" | "resilience" | "failClosedPaths" | "responseSignals">
   > & Pick<ShieldOptions, "logUrl" | "onError" | "burst">;
 
   /** Resolved inspection config, or null when inspection is off. */
@@ -287,6 +297,9 @@ export class ShieldClient {
 
   private hits = new Map<string, Hit[]>();
   private localBlocks = new Map<string, { until: number; reason: string }>();
+  /** IPs throttled on this server by response signals. */
+  private localThrottles = new Map<string, { until: number; reason: string }>();
+  private responses: ResponseSignals | null;
   private incidentSeen = new Map<string, number>();
 
   /** Blocked/throttled events: sent first and dropped last. */
@@ -332,6 +345,7 @@ export class ShieldClient {
     this.reportDeps = options.reportDependencies !== false;
     this.probes = options.verification === false ? null : new ProbeVerifier(options.connectionKey, () => this.clock());
     this.resilience = options.resilience === false ? null : new Resilience(options.resilience || {}, () => this.clock());
+    this.responses = options.responseSignals === false ? null : new ResponseSignals(options.responseSignals || {});
     const f = options.fetch ?? (typeof fetch !== "undefined" ? fetch : undefined);
     if (!f) throw new Error("SwarmTech Shield: no fetch implementation available; pass options.fetch");
     this.fetchImpl = f.bind(globalThis) as typeof fetch;
@@ -513,6 +527,14 @@ export class ShieldClient {
         }
       }
 
+      // Response signals: an IP whose answers were mostly 401/403 is throttled for a while here.
+      if (result.verdict === "allowed" && result.decision?.triggered?.action !== "allow" && ip && !synthetic && !identity) {
+        const t = this.localThrottles.get(ip);
+        if (t && t.until > now && result.decision) {
+          result = this.override(result.decision, "throttled", t.reason, { id: "response:auth_failures", name: "Response signals: auth failures", type: "rate_limit", action: "throttle" }, "Response signals");
+        }
+      }
+
       // Signed probes from the checker: prove this route is protected, without logging an attack.
       let verification: CheckResult["verification"];
       if (this.probes && result.source !== "disabled") {
@@ -537,9 +559,15 @@ export class ShieldClient {
       const flush = this.maybeFlush();
       if (flush) background.push(flush);
 
+      // Only requests that reach the app get an answer worth counting; synthetic and service traffic never counts.
+      const reportResponse = result.allowed && this.responses && ip && !synthetic && !identity
+        ? (status: number) => this.reportResponse(ip, path, status)
+        : undefined;
+
       return {
         ...result,
         ...(verification ? { verification } : {}),
+        ...(reportResponse ? { reportResponse } : {}),
         durationMs,
         background: background.length ? Promise.all(background).then(() => undefined) : undefined,
       };
@@ -597,6 +625,47 @@ export class ShieldClient {
       reason: `Shed ${count} low-priority request(s): server overloaded (load ${st.loadMs} ms)`,
       is_incident: true,
       details: { source: "middleware", sdk_version: SDK_VERSION, shed_count: count, under_attack: st.underAttack },
+    });
+    this.trimQueues();
+  }
+
+  /** Records the status the app answered a request with (see CheckResult.reportResponse). Never throws. */
+  reportResponse(ip: string, path: string, status: number): void {
+    try {
+      if (!this.responses) return;
+      const now = this.clock();
+      for (const signal of this.responses.record(ip, path, Number(status), now)) this.actOnSignal(signal, path, now);
+    } catch (err) {
+      this.report(err as Error, "response");
+    }
+  }
+
+  private actOnSignal(signal: ResponseSignal, path: string, now: number) {
+    const until = now + this.opts.localBlockSeconds * 1000;
+    if (signal.ip && signal.action === "block") this.localBlocks.set(signal.ip, { until, reason: signal.reason });
+    if (signal.ip && signal.action === "throttle") this.localThrottles.set(signal.ip, { until, reason: signal.reason });
+    if (!this.opts.logUrl) return;
+    const acted = signal.action === "block" ? "blocked" : signal.action === "throttle" ? "throttled" : "allowed";
+    this.priorityQueue.push({
+      source_ip: signal.ip,
+      method: "-",
+      path: signal.ip ? trunc(this.opts.logQueryString ? path : path.split("?")[0], 2000) : "(app-wide)",
+      port: null,
+      country: "",
+      user_agent: "",
+      body_size: 0,
+      // A log-only signal (5xx spike) blocked nothing, so it is logged as allowed.
+      verdict: acted,
+      screening_ms: 0,
+      rule_id: `response:${signal.type}`,
+      rule_name: `Response signals: ${signal.type.replace("_", " ")}`,
+      rule_type: "rate_limit",
+      reason: signal.action === "log" ? signal.reason : `${signal.reason}; ${acted} on this server for ${this.opts.localBlockSeconds}s`,
+      is_incident: true,
+      details: {
+        source: "middleware", sdk_version: SDK_VERSION, defence: "Response signals",
+        response_signal: { type: signal.type, count: signal.count, window_seconds: signal.windowSeconds, action: signal.action },
+      },
     });
     this.trimQueues();
   }
@@ -712,6 +781,7 @@ export class ShieldClient {
       ipSource: this.ipSource,
       loginDefence: this.outcomes?.defenceState() ?? null,
       threatLists: this.threatLists.status(),
+      responseSignals: this.responses ? { ...this.responses.state(), throttledIps: this.localThrottles.size } : null,
     };
   }
 
@@ -840,6 +910,8 @@ export class ShieldClient {
       }
     }
     for (const [ip, b] of this.localBlocks) if (b.until <= now) this.localBlocks.delete(ip);
+    for (const [ip, b] of this.localThrottles) if (b.until <= now) this.localThrottles.delete(ip);
+    this.responses?.evict(now);
     for (const [k, t] of this.incidentSeen) if (now - t > INCIDENT_DEDUPE_MS) this.incidentSeen.delete(k);
   }
 

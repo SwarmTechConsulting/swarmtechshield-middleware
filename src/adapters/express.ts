@@ -29,6 +29,8 @@ export interface ExpressLikeResponse {
   type?(t: string): ExpressLikeResponse;
   send(body?: unknown): unknown;
   headersSent?: boolean;
+  statusCode?: number;
+  on?(event: "finish", listener: () => void): unknown;
 }
 export type NextFunction = (err?: unknown) => void;
 
@@ -128,7 +130,14 @@ export function express(options: ExpressOptions) {
         if (result.verification && !res.headersSent) {
           for (const [k, v] of Object.entries(result.verification.headers)) setHeader(res, k, v);
         }
-        if (result.allowed) return proceed();
+        if (result.allowed) {
+          // Response signals: count what the app answers (404 floods, 401/403 floods, 5xx spikes).
+          if (result.reportResponse && res.on) {
+            const report = result.reportResponse;
+            res.on("finish", () => report(Number(res.statusCode)));
+          }
+          return proceed();
+        }
         if (options.onBlocked && !result.decoy) return options.onBlocked(req, res, next, result);
         if (res.headersSent) return;
         if (result.shed) {

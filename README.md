@@ -258,6 +258,24 @@ SwarmTech Shield keeps platform threat lists, refreshed every 6 hours: **Spamhau
 
 The middleware receives only the lists your rules use, with the rule sync, and only when its copy is out of date; it checks each request in memory. `client.status().threatLists` shows what it holds. Rules of this type need 0.10.0 or later; older versions ignore them (an unknown rule type matches nothing).
 
+### Response signals (on by default)
+
+What your app answered says things the request alone can't. The middleware counts, per server:
+
+- **Not-found floods from one IP** (forced browsing, enumeration): 40 responses of 404 in 60 s blocks the IP here for `localBlockSeconds`.
+- **Auth-failure floods from one IP** (token guessing, access probing): 25 responses of 401 or 403 in 60 s throttles it.
+- **Server-error spikes across the app**: 50 responses of 5xx in 60 s logs one incident. Nothing is blocked.
+
+Each logs one incident, and SwarmTech Shield raises an alert (at most one per app and kind per hour). Static assets (images, fonts, scripts, styles, source maps, favicon) never count. The Express adapter reports statuses itself; with the other adapters, call `result.reportResponse(response.status)` after your handler answers (it is only set on allowed requests). Next.js middleware runs before your route, so it can't see the status. Tune or turn off with `responseSignals: { notFound: { count, windowSeconds, action }, authFailures: { ... }, serverErrors: { count, windowSeconds }, ignorePaths }`, `false` for one of them, or `responseSignals: false`. `client.status().responseSignals` shows the counts.
+
+```ts
+const result = await SwarmTechShield.base44(req, options);
+if (!result.allowed) return SwarmTechShield.toResponse(result);
+const response = await handle(req);
+result.reportResponse?.(response.status);
+return response;
+```
+
 ### Virtual patches matched to your dependencies
 
 ```js
@@ -317,6 +335,7 @@ Set `resilience: false` to turn all of this off.
 | `syncUrl` | required | URL of `syncRuleCache`. |
 | `logUrl` | none | URL of `submitTrafficLog`. Omit to turn off logging. |
 | `failMode` | `"open"` | `"open"` allows or `"closed"` blocks requests while no usable rules exist. Replaced by the app's own setting after the first sync. |
+| `responseSignals` | on | 404 floods (block), 401/403 floods (throttle) and 5xx spikes (log) from what your app answered. See *Response signals*. `false` turns it off. |
 | `failClosedPaths` | `[]` | Paths that fail closed even when `failMode` is open, e.g. `["/login", "/checkout", "/admin"]`. A prefix matches itself and anything below it (`/login` matches `/login/2fa`, not `/loginx`); a trailing `*` matches any continuation (`/api/pay*`). Replaced by the app's own list (set in the console) after the first sync. |
 | `syncIntervalMs` | 30,000 | How often to check for rule changes. |
 | `fullSyncEveryMs` | 300,000 | Download all rules at least this often, even if the version looks unchanged. |
